@@ -567,6 +567,12 @@ def federated_feudal_training(num_clients=4, comm_rounds=100, episodes_per_round
     global_manager = ManagerAgent(manager_state_size, goal_size, num_agents=agents_per_client,
                                   scale=params["env_size"], lr=lr)
     
+    # Create LR schedulers for the manager's optimizers.
+    manager_policy_scheduler = torch.optim.lr_scheduler.StepLR(
+        global_manager.policy_optimizer, step_size=100, gamma=0.9)
+    manager_value_scheduler = torch.optim.lr_scheduler.StepLR(
+        global_manager.value_optimizer, step_size=100, gamma=0.9)    
+    
     # Create clients.
     for _ in range(num_clients):
         params = randomize_catch_parameters(num_drones=agents_per_client)
@@ -582,7 +588,11 @@ def federated_feudal_training(num_clients=4, comm_rounds=100, episodes_per_round
         # Create a single WorkerAgent per client (shared by both agents).
         worker_agent = WorkerAgent(worker_state_size, action_size, lr=lr)
         # Build a dictionary mapping each agent id to the same worker_agent.
-        # (The train_feudal_episode function expects a dict keyed by agent id.)
+        # Attach LR schedulers to the worker agent.
+        worker_agent.policy_scheduler = torch.optim.lr_scheduler.StepLR(
+            worker_agent.policy_optimizer, step_size=100, gamma=0.9)
+        worker_agent.value_scheduler = torch.optim.lr_scheduler.StepLR(
+            worker_agent.value_optimizer, step_size=100, gamma=0.9)
         worker_dict = {f'agent_{i}': worker_agent for i in range(agents_per_client)}
         client_worker_agents.append(worker_dict)
     
@@ -624,6 +634,21 @@ def federated_feudal_training(num_clients=4, comm_rounds=100, episodes_per_round
         # First, extract the WorkerAgent from each client (they share one per client).
         worker_agents_list = [list(client_worker_agents[i].values())[0] for i in range(num_clients)]
         federated_average_workers(worker_agents_list)
+        
+        # Step the learning rate schedulers.
+        # For each worker agent.
+        for worker_dict in client_worker_agents:
+            worker = list(worker_dict.values())[0]
+            worker.policy_scheduler.step()
+            worker.value_scheduler.step()
+        # For the manager.
+        manager_policy_scheduler.step()
+        manager_value_scheduler.step()
+        
+        # Optionally, print the current learning rate:
+        current_lr = global_manager.policy_optimizer.param_groups[0]['lr']
+        print(f" | Current LR: {current_lr:.6f}", end="")        
+        
         
     # Close all client environments.
     for env in client_envs:
@@ -721,7 +746,7 @@ if __name__ == '__main__':
     lr = 5e-4 # 5e-4 1e-5
     entropy_coef = 0.01
     gamma = 0.95
-    comm_rounds = 400
+    comm_rounds = 500
     episodes_per_round = 10
     total_eps = comm_rounds*episodes_per_round
     curriculum_rate = 0.1
