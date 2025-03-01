@@ -1,0 +1,251 @@
+\documentclass{article}
+\usepackage{amsmath, amssymb}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{geometry}
+\geometry{margin=1in}
+\title{Technical Explanation of Federated Feudal Reinforcement Learning Implementation}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{Hierarchical (Feudal) Reinforcement Learning in Privacy-Oriented Context}
+
+\subsection{Overview}
+\begin{itemize}
+    \item The implementation adopts a feudal (or hierarchical) reinforcement learning paradigm.
+    \item A single global \textbf{ManagerAgent} sets high-level goals based on the overall (global) state.
+    \item Each client operates multiple \textbf{WorkerAgents} in a local environments (in this case, a variant of the Catch game) that share a single network, ensuring that local updates reflect a common policy.
+    \item These worker networks are later synchronized using \textbf{federated averaging} \cite{McMahan2016}\footnote{\url{https://arxiv.org/abs/1602.05629}} after local training rounds.
+    \item The manager-worker structure is similar to the architecture described in \textit{FeUdal Networks for Hierarchical Reinforcement Learning} by Vezhnevets et al. (2017) and builds on earlier work by Dayan and Hinton (1993).
+\end{itemize}
+
+\subsection{Manager Agent}
+\begin{itemize}
+    \item Computes sub-goals (e.g., target positions) from a global state that aggregates information from all workers and the target.
+\end{itemize}
+
+\subsection{Worker Agent}
+\begin{itemize}
+    \item Uses a combined state (its own observation plus the goal provided by the manager) to sample actions that move it toward achieving the manager's intent.
+\end{itemize}
+
+\subsection{Mathematical Formulation for the Manager Network}
+Given a global state vector \( s \), the network computes:
+\begin{enumerate}[label=(\arabic*)]
+    \item \textbf{First Hidden Layer:}
+    \[
+    h_1 = \text{ReLU}(W_1 \cdot s + b_1)
+    \]
+    The input state \( s \) is multiplied by a weight matrix \( W_1 \), added to a bias vector \( b_1 \), and passed through the ReLU activation function (which sets negative values to zero) to produce the first hidden layer output \( h_1 \).
+    
+    \item \textbf{Second Hidden Layer:}
+    \[
+    h_2 = \text{ReLU}(W_2 \cdot h_1 + b_2)
+    \]
+    The output \( h_1 \) is transformed using weights \( W_2 \) and bias \( b_2 \), then passed through ReLU to yield \( h_2 \).
+    
+    \item \textbf{Manager Mean Output (Goal Generation):}
+    \[
+    \mu_{\text{manager}} = \tanh(W_\mu \cdot h_2 + b_\mu) \times \text{scale}
+    \]
+    A linear transformation of \( h_2 \) using weights \( W_\mu \) and bias \( b_\mu \) is passed through a tanh activation to produce values between \(-1\) and \(1\). Multiplication by a scaling factor adjusts the output to the environment's coordinate range.
+    
+    \item \textbf{Manager Standard Deviation Output:}
+    \[
+    \sigma_{\text{manager}} = \text{softplus}(W_\sigma \cdot h_2 + b_\sigma) + \epsilon
+    \]
+    A similar transformation is applied to \( h_2 \). The softplus function ensures that the standard deviation is positive, and a small constant \( \epsilon \) (e.g., \(10^{-5}\)) is added for numerical stability.
+\end{enumerate}
+
+\subsection{Mathematical Formulation for the Worker Network}
+For an augmented state \( s_{\text{worker}} \) (concatenating the worker's observation with the goal), the computations are similar:
+\begin{enumerate}[label=(\arabic*)]
+    \item \textbf{First Hidden Layer:}
+    \[
+    h_1' = \text{ReLU}(W_1' \cdot s_{\text{worker}} + b_1')
+    \]
+    
+    \item \textbf{Second Hidden Layer:}
+    \[
+    h_2' = \text{ReLU}(W_2' \cdot h_1' + b_2')
+    \]
+    
+    \item \textbf{Worker Mean Output:}
+    \[
+    \mu_{\text{worker}} = W_\mu' \cdot h_2' + b_\mu'
+    \]
+    
+    \item \textbf{Worker Standard Deviation Output:}
+    \[
+    \sigma_{\text{worker}} = \text{softplus}(W_\sigma' \cdot h_2' + b_\sigma') + \epsilon
+    \]
+\end{enumerate}
+For further details on hierarchical goal setting, see Vezhnevets et al. (2017).
+
+\section{Actor-Critic and Advantage Estimation}
+
+\subsection{Overview}
+The training employs an actor-critic method for both manager and workers. Two networks are maintained per agent:
+\begin{itemize}
+    \item \textbf{Policy (Actor):} Outputs a parameterized Gaussian distribution over actions or goals.
+    \item \textbf{Value (Critic):} Estimates the state value function \( V(s) \).
+\end{itemize}
+
+\subsection{Generalized Advantage Estimation (GAE)}
+\begin{itemize}
+    \item \textbf{Temporal-Difference (TD) Error:}
+    \[
+    \delta_t = r_t + \gamma \cdot V(s_{t+1}) - V(s_t)
+    \]
+    At time step \( t \), the TD error \( \delta_t \) measures the difference between the observed reward \( r_t \) plus the discounted value of the next state \( V(s_{t+1}) \) and the current state's value \( V(s_t) \).
+    
+	Given a value function defined as:
+	\[
+	V(s_t) = \mathbb{E}\left[\sum_{k=0}^{\infty} \gamma^k \, r_{t+k} \,\middle|\, s_t\right]
+	\]
+	where:
+	\begin{itemize}
+	    \item \(r_{t+k}\) is the reward received \(k\) steps in the future,
+	    \item \(\gamma\) is the discount factor (a number between 0 and 1) that weighs future rewards,
+	    \item The expectation is taken over the stochastic transitions of the environment and the actions dictated by the current policy.
+	\end{itemize}
+
+    \item \textbf{Advantage Calculation:}
+    \[
+    A_t = \sum_{l=0}^{T-t-1} (\gamma \lambda)^l \cdot \delta_{t+l}
+    \]
+    The advantage \( A_t \) at time \( t \) is computed by summing future TD errors, each discounted exponentially by the factor \( (\gamma \lambda) \), where \( \gamma \) is the discount factor and \( \lambda \) is a smoothing parameter.
+\end{itemize}
+
+\subsection{Loss Functions}
+\begin{itemize}
+    \item \textbf{Actor Loss:}
+    \[
+    \mathcal{L}_{\text{actor}} = -\log \pi(a_t|s_t) \cdot A_t - \beta \cdot H(\pi(\cdot|s_t))
+    \]
+    This loss includes:
+    \begin{itemize}
+        \item \( -\log \pi(a_t|s_t) \cdot A_t \): Encourages actions that yield higher advantages.
+        \item \( -\beta \cdot H(\pi(\cdot|s_t)) \): An entropy bonus (weighted by \( \beta \)) that promotes exploration by preventing the policy from becoming too confident.
+    \end{itemize}
+    
+    \item \textbf{Critic Loss:}
+    \[
+    \mathcal{L}_{\text{critic}} = \frac{1}{2} \left( V(s_t) - R_t \right)^2
+    \]
+    This is the mean squared error between the estimated value \( V(s_t) \) and the target return \( R_t \) computed via GAE.
+\end{itemize}
+
+For further details on GAE and actor-critic updates, see Schulman et al. (2016).
+
+\section{Federated Learning Components}
+
+\subsection{Federated Averaging}
+After each communication round, the worker networks from all clients are averaged to form a new global model. The formula is:
+\[
+\theta_{\text{global}} = \frac{1}{N} \sum_{i=1}^{N} \theta_i
+\]
+where \( \theta_i \) represents the parameters of the \( i \)-th client’s worker network, and \( N \) is the number of clients. (See McMahan et al., 2016.)
+
+\subsection{FedProx Regularization}
+To address heterogeneity in client data and stabilize updates, a \textbf{FedProx} term is added:
+\[
+\mathcal{L}_{\text{prox}} = \frac{\mu}{2} \left\| \theta_i - \theta_{\text{global}} \right\|^2
+\]
+Here, \( \mu \) is a coefficient that controls the strength of the penalty for deviations between a client’s parameters \( \theta_i \) and the global model \( \theta_{\text{global}} \).
+In our implementation, the coefficient \(\mu\) is scheduled dynamically, increasing linearly from 0 to a maximum value over a defined number of episodes \cite{Li2020}\footnote{\url{https://arxiv.org/abs/1812.06127}}. This gradual enforcement helps maintain consistency between the client models and the global model.
+
+\section{Curriculum Learning and Intrinsic Rewards}
+
+\subsection{Curriculum Weighting}
+The approach gradually shifts the workers’ reliance from the true target to the manager’s goal:
+\[
+g_{\text{worker}} = (1 - \alpha) \cdot g_{\text{true}} + \alpha \cdot g_{\text{manager}}
+\]
+The curriculum weight \( \alpha \) starts near 0 and increases to 1 over training episodes, blending the true target \( g_{\text{true}} \) with the manager’s goal \( g_{\text{manager}} \). (See Bengio et al., 2009.)
+
+\subsection{Intrinsic Rewards}
+In addition to extrinsic rewards, workers receive an intrinsic reward based on their proximity to the assigned goal:
+\[
+r_{\text{intrinsic}} = -\kappa \cdot \| p - g \|
+\]
+where \( p \) is the worker's current position, \( g \) is the goal, and \( \kappa \) is a scaling coefficient. The reward becomes less negative as the worker approaches the goal.
+
+\section{Additional Techniques}
+
+\subsection{Gradient Clipping}
+Gradient clipping is applied to both manager and worker networks to prevent exploding gradients. A maximum norm (e.g., 5.0) is enforced; if the gradient exceeds this norm, it is scaled down. (See Pascanu et al., 2013.)
+
+\subsection{Environment and Randomization}
+\begin{itemize}
+    \item The environment is a variant of the Catch game.
+    \item Randomization functions are used to:
+    \begin{itemize}
+        \item \textbf{Drone Initialization:} Drone positions are sampled with a minimum separation constraint to avoid overlapping positions.
+        \item \textbf{Target Placement:} The target is placed at a location ensuring a specified minimum separation from all drones.
+        \item \textbf{Dynamic Target Speed:} The target speed is randomized, adding variability and challenge to the task.
+    \end{itemize}
+    \item This diversity in initialization promotes robustness in learning.
+\end{itemize}
+
+\section{Consistency Loss Between Manager and Workers}
+An optional consistency loss is incorporated once the curriculum weight exceeds a specified threshold. This loss minimizes the discrepancy between the manager's predicted sub-goals and the desired goals—computed as the difference between the true target and the worker's current position. Such alignment reinforces coherent high-level guidance with local worker behavior.
+
+\section{Learning Rate Scheduling}
+Both the manager and worker networks utilize learning rate schedulers to decay the learning rate periodically (e.g., by a factor of 0.9 every fixed number of episodes). This scheduling strategy contributes to a more stable training process by gradually reducing the learning rate as training progresses.
+
+
+\section{Summary of the Pipeline}
+\begin{itemize}
+    \item \textbf{Network Architectures:}
+    \begin{itemize}
+        \item \textbf{Manager Network:} Processes the global state and generates Gaussian parameters (mean and standard deviation) for sub-goals.
+        \item \textbf{Worker Network:} Processes a concatenated vector (own state + goal) and produces Gaussian parameters for action sampling.
+    \end{itemize}
+    \item \textbf{Training Dynamics:}
+    \begin{itemize}
+        \item \textbf{Actor-Critic Losses:} Both manager and worker losses are computed using GAE, entropy regularization, and mean squared error (MSE) for the critic.
+        \item \textbf{FedProx Regularization:} A proximal term is added to the worker loss to maintain consistency with the global model.
+        \item \textbf{Federated Averaging:} Worker network parameters are averaged across clients after local training rounds.
+    \end{itemize}
+    \item \textbf{Hierarchical and Curriculum Learning:}
+    \begin{itemize}
+        \item Manager goals are blended with the true target based on a curriculum schedule.
+        \item Intrinsic rewards encourage workers to minimize the distance to their sub-goals.
+    \end{itemize}
+\end{itemize}
+
+\section{Citations}
+\begin{thebibliography}{9}
+    
+\bibitem{McMahan2016}
+McMahan, B., Moore, E., Ramage, D., Hampson, S., \& y Arcas, B. A. (2016). 
+\textit{Communication-Efficient Learning of Deep Networks from Decentralized Data}. 
+\url{https://arxiv.org/abs/1602.05629}.
+
+\bibitem{Li2020}
+Li, T., Sahu, A. K., Talwalkar, A., \& Smith, V. (2020). 
+\textit{Federated Optimization in Heterogeneous Networks}.
+
+\bibitem{Vezhnevets2017}
+Vezhnevets, A. S., Osindero, S., Schaul, T., Heess, N., Jaderberg, M., Silver, D., \& Kavukcuoglu, K. (2017). 
+\textit{FeUdal Networks for Hierarchical Reinforcement Learning}.
+
+\bibitem{Schulman2016}
+Schulman, J., Moritz, P., Levine, S., Jordan, M., \& Abbeel, P. (2016). 
+\textit{High-Dimensional Continuous Control Using Generalized Advantage Estimation}.
+
+\bibitem{Bengio2009}
+Bengio, Y., Louradour, J., Collobert, R., \& Weston, J. (2009). 
+\textit{Curriculum Learning}.
+
+\bibitem{Pascanu2013}
+Pascanu, R., Mikolov, T., \& Bengio, Y. (2013). 
+\textit{On the Difficulty of Training Recurrent Neural Networks}.
+
+\end{thebibliography}
+
+\end{document}
