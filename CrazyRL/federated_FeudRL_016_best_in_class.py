@@ -302,7 +302,6 @@ def train_feudal_episode(manager,
                          episode,
                          gamma=0.995,
                          entropy_coef=0.01,
-                         global_worker_state=None,
                          mu=1e-4,
                          lam=0.95,
                          manager_interval=3):
@@ -310,7 +309,6 @@ def train_feudal_episode(manager,
     Run one feudal RL episode for training.
       - The manager computes a goal for each worker based on a global state.
       - Actor-critic losses are computed and both manager and worker networks are updated.
-      - If a global_worker_state is provided, a FedProx term is added to the worker loss.
     """
     # Logs for manager and workers.
     manager_log_probs_list = []
@@ -446,12 +444,6 @@ def train_feudal_episode(manager,
     worker_loss_total = worker_actor_loss_total + value_coef * worker_critic_loss_total
     
     
-    # If a global worker state is provided, add the FedProx proximal term.
-    if global_worker_state is not None:
-        # Compute FedProx coefficient
-        prox_loss = compute_fedprox_term(workers[agent_keys[0]], global_worker_state, mu)
-        worker_loss_total = worker_loss_total + prox_loss
-
     global_loss = manager_loss + worker_loss_total
     
     # ---- Backpropagation ----
@@ -487,29 +479,6 @@ def train_feudal_episode(manager,
     
     # Return metrics.
     return total_episode_reward, manager_loss.item(), worker_loss_total.item(), global_loss.item(), caught_train, steps
-
-# =============================================================================
-# Federated Averaging for Worker Networks
-# =============================================================================
-
-def federated_average_workers(worker_agents_list):
-    """
-    Given a list of WorkerAgent objects (one per client), average the parameters
-    of both the policy and value networks.
-    """
-    num_clients = len(worker_agents_list)
-    # Average policy_net parameters.
-    global_policy_state = {}
-    for key in worker_agents_list[0].policy_net.state_dict().keys():
-        global_policy_state[key] = sum(agent.policy_net.state_dict()[key] for agent in worker_agents_list) / num_clients
-    # Average value_net parameters.
-    global_value_state = {}
-    for key in worker_agents_list[0].value_net.state_dict().keys():
-        global_value_state[key] = sum(agent.value_net.state_dict()[key] for agent in worker_agents_list) / num_clients
-    # Update each worker agent.
-    for agent in worker_agents_list:
-        agent.policy_net.load_state_dict(global_policy_state)
-        agent.value_net.load_state_dict(global_value_state)
 
 # =============================================================================
 # Federated FeudRL Training Loop
@@ -605,7 +574,6 @@ def federated_feudal_training(num_clients=4,
             workers = client_worker_agents[client_idx]
             client_rewards = []
             capture_count = 0  # Count how many episodes the target is captured
-            global_worker_state = get_global_worker_state(list(workers.values())[0])
             
             # Run local episodes.
             for ep in range(episodes_per_round):
@@ -616,7 +584,6 @@ def federated_feudal_training(num_clients=4,
                     episode=comm_round * episodes_per_round + ep,
                     gamma=gamma,
                     entropy_coef=entropy_coef,
-                    global_worker_state=global_worker_state,
                     mu=mu,
                     lam=lam,
                     manager_interval=3
@@ -654,12 +621,20 @@ def federated_feudal_training(num_clients=4,
         else:
             high_capture_counter = 0        
 
-        # Federated Averaging: average the worker networks across clients.
-        # Extract the WorkerAgent from each client (they share one per client).
-        worker_agents_list = [list(client_worker_agents[i].values())[0] for i in range(num_clients)]
+        # === Best-in-Class update ===
+        # 1) Pick the client with highest avg reward this round
+        best_idx = int(np.argmax(round_rewards_clients))
+        best_worker = list(client_worker_agents[best_idx].values())[0]
 
-        # Apply federated averaging.
-        federated_average_workers(worker_agents_list)
+        # 2) Extract its trained weights
+        best_policy_state = best_worker.policy_net.state_dict()
+        best_value_state  = best_worker.value_net.state_dict()
+
+        # 3) Broadcast those weights to all clients
+        for client_dict in client_worker_agents:
+            w = list(client_dict.values())[0]
+            w.policy_net.load_state_dict(best_policy_state)
+            w.value_net .load_state_dict(best_value_state)
         
         # Step the learning rate schedulers.
         # For each worker agent.
@@ -838,7 +813,7 @@ manager_lr = 7.96e-05
 worker_lr = 1.3e-05
 entropy_coef = 0.04
 gamma = 0.97 # 1 to remove lr decay
-comm_rounds = 100
+comm_rounds = 1000
 episodes_per_round = 50
 mu= 1.26e-05 #  0 to disable FedProx.  .0001
 gae_lam = 0.91
