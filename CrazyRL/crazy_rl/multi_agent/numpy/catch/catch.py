@@ -170,7 +170,7 @@ class Catch(BaseParallelEnv):
     def _compute_reward(self):
         # Reward is the mean distance to the other agents minus the distance to the target
         reward = dict()
-
+        
         for agent in self._agents_names:
             reward_far_from_other_agents = 0
             reward_close_to_target = 0
@@ -204,12 +204,12 @@ class Catch(BaseParallelEnv):
 
             # 4. Check for ground collision.
             if self._agent_location[agent][2] < CLOSENESS_THRESHOLD:
-                reward[agent] = -10
+                reward[agent] = -20
                 
             # 5. Check if the agent caught the target.
             elif np.linalg.norm(self._agent_location[agent] - self._target_location["unique"]) < CLOSENESS_THRESHOLD:
                 # Give a special catch reward.
-                reward[agent] = 50    
+                reward[agent] = 100    
 
             else:
                 # Otherwise, combine the reward terms as originally defined.
@@ -253,7 +253,7 @@ class Catch(BaseParallelEnv):
 
     @override
     def _compute_truncation(self):
-        if self.timestep == 200:
+        if self.timestep == 50:
             truncation = {agent: True for agent in self._agents_names}
             self.agents = []
             self.timestep = 0
@@ -264,6 +264,14 @@ class Catch(BaseParallelEnv):
     @override
     def _compute_info(self):
         info = dict()
+        
+        # Include the caught flag in the info.
+        caught_flags = {
+            agent: np.linalg.norm(self._agent_location[agent] - self._target_location["unique"]) < CLOSENESS_THRESHOLD
+            for agent in self._agents_names
+        }
+        info["caught"] = caught_flags        
+        
         return info
 
     @override
