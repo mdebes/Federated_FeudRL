@@ -11,19 +11,8 @@ This script implements a federated feudal reinforcement learning approach:
   - Multiple clients (here, 4 clients) each have 2 worker agents (sharing one network per client)
     that use the manager’s goal to select actions in a local environment (Catch).
   - Each client runs several local feudal RL episodes.
-  - After each communication round, the local worker networks are averaged via federated averaging.
-  - In addition, FedProx is applied during the local worker updates to keep client models close to
-    the global model (see Li et al., 2020).
-      
-References:
-    - Feudal RL implementation based on CrazyRL:
-      https://github.com/ffelten/CrazyRL/tree/main
-    - Federated Averaging:
-      McMahan, Brendan, et al. "Communication-Efficient Learning of Deep Networks from Decentralized Data."
-      https://arxiv.org/abs/1602.05629
-    - FedProx:
-      Li, T., Sahu, A. K., Talwalkar, A., & Smith, V. (2020).
-      https://arxiv.org/abs/1812.06127
+  - After each communication round, the local worker networks are updated using Population Based Training.
+  
 """
 
 import numpy as np
